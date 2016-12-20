@@ -73,16 +73,16 @@ func clientForNodes(n NodeList) *memcache.Client {
 	return memcache.New(urls...)
 }
 
-func remoteCommand(conn io.ReadWriter, command string) string {
+func remoteCommand(conn io.ReadWriter, command string) []string {
 	fmt.Fprintf(conn, command+"\r\n")
-	var response string
+	response := []string{}
 
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		if scanner.Text() == OUTPUT_END_MARKER {
 			break
 		}
-		response += scanner.Text() + "\r\n"
+		response = append(response, scanner.Text())
 
 	}
 
@@ -94,15 +94,15 @@ var NEW_COMMAND = "config get cluster"
 var OLD_COMMAND = "get AmazonElastiCache:cluster"
 var NEW_COMMAND_AVAILABLE_VERSION, _ = version.NewVersion("1.4.14")
 var OUTPUT_END_MARKER = "END"
-var VERSION_REGEX = regexp.MustCompile("(?m)^STAT version ([0-9.]+)\\s*$")
+var VERSION_REGEX = regexp.MustCompile("^STAT version ([0-9.]+)\\s*$")
 var NODE_SEPARATOR = " "
 
-func getNodeData(conn io.ReadWriter) (*string, error) {
+func getNodeData(conn io.ReadWriter) (*[]string, error) {
 	stats, err := parseStats(remoteCommand(conn, STATS_COMMAND))
 	if err != nil {
 		return nil, err
 	}
-	var nodeInfo string
+	var nodeInfo []string
 	if stats.Version.LessThan(NEW_COMMAND_AVAILABLE_VERSION) {
 		nodeInfo = remoteCommand(conn, OLD_COMMAND)
 	} else {
@@ -127,12 +127,15 @@ func clusterNodes() (NodeList, error) {
 		return nil, err
 	}
 	nodes := []Node{}
-	for _, line := range strings.Split(*nodeInfo, NODE_SEPARATOR) {
-		n, err := parseNodeLine(line)
-		if err != nil {
-			return nil, err
-		} else {
-			nodes = append(nodes, n)
+
+	for _, line := range *nodeInfo {
+		if strings.Contains(line, "|") {
+			n, err := parseNodeLine(line)
+			if err != nil {
+				return nil, err
+			} else {
+				nodes = append(nodes, n)
+			}
 		}
 	}
 	return &nodes, nil
@@ -149,15 +152,20 @@ func elasticache() (string, error) {
 	return endpoint, nil
 }
 
-func parseStats(stats string) (*StatInformation, error) {
-	ver := VERSION_REGEX.FindStringSubmatch(stats)
-	if ver == nil || len(ver) < 2 {
-		return nil, errors.New("Did not find version information in results of STAT command")
+func parseStats(stats []string) (*StatInformation, error) {
+	for _, line := range stats {
+		if strings.HasPrefix(line, "STAT version") {
+			ver := VERSION_REGEX.FindStringSubmatch(line)
+			if ver == nil || len(ver) < 2 {
+				return nil, errors.New("Did not find version information on STAT line: " + line)
+			}
+			rVal := StatInformation{}
+			var err error
+			rVal.Version, err = version.NewVersion(ver[1])
+			return &rVal, err
+		}
 	}
-	rVal := StatInformation{}
-	var err error
-	rVal.Version, err = version.NewVersion(ver[1])
-	return &rVal, err
+	return nil, errors.New("No STAT version line was found in results of STAT command")
 }
 
 func parseNodeLine(nodeData string) (Node, error) {
