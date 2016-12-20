@@ -82,7 +82,7 @@ func remoteCommand(conn io.ReadWriter, command string) string {
 		if scanner.Text() == OUTPUT_END_MARKER {
 			break
 		}
-		response += scanner.Text()
+		response += scanner.Text() + "\r\n"
 
 	}
 
@@ -94,7 +94,7 @@ var NEW_COMMAND = "config get cluster"
 var OLD_COMMAND = "get AmazonElastiCache:cluster"
 var NEW_COMMAND_AVAILABLE_VERSION, _ = version.NewVersion("1.4.14")
 var OUTPUT_END_MARKER = "END"
-var VERSION_REGEX = regexp.MustCompile("^STAT version ([0-9.]+)\\s*$")
+var VERSION_REGEX = regexp.MustCompile("(?m)^STAT version ([0-9.]+)\\s*$")
 var NODE_SEPARATOR = " "
 
 func getNodeData(conn io.ReadWriter) (*string, error) {
