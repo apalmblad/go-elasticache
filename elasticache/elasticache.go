@@ -13,6 +13,7 @@ import (
 
 	"github.com/bradfitz/gomemcache/memcache"
 	"github.com/integralist/go-findroot/find"
+	"github.com/hashicorp/go-version"
 )
 
 // Node is a single ElastiCache node
@@ -22,6 +23,12 @@ type Node struct {
 	IP   string
 	Port int
 }
+type Node struct {
+	Host string
+	IP string
+	Port int
+}
+type NodeList *Node[]
 
 // Item embeds the memcache client's type of the same name
 type Item memcache.Item
@@ -29,6 +36,10 @@ type Item memcache.Item
 // Client embeds the memcache client so we can hide those details away
 type Client struct {
 	*memcache.Client
+}
+
+type StatInformation struct {
+	Version version.Version
 }
 
 // Set abstracts the memcache client details away,
@@ -43,36 +54,59 @@ func (c *Client) Set(item *Item) error {
 	})
 }
 
-var logger *log.Logger
-
-func init() {
-	logger = log.New(os.Stdout, "go-elasticache: ", log.Ldate|log.Ltime|log.Lshortfile)
-
-	if env := os.Getenv("APP_ENV"); env == "test" {
-		root, err := find.Repo()
-		if err != nil {
-			log.Printf("Repo Error: %s", err.Error())
-		}
-
-		path := fmt.Sprintf("%s/go-elasticache.log", root.Path)
-
-		file, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0666)
-		if err != nil {
-			log.Printf("Open File Error: %s", err.Error())
-		}
-
-		logger = log.New(file, "go-elasticache: ", log.Ldate|log.Ltime|log.Lshortfile)
-	}
-}
-
 // New returns an instance of the memcache client
 func New() (*Client, error) {
-	urls, err := clusterNodes()
+	nodes, err := clusterNodes()
 	if err != nil {
-		return &Client{Client: memcache.New()}, err
+		return nil, err
 	}
 
-	return &Client{Client: memcache.New(urls...)}, nil
+	return &Client{Client: clientForNodes( nodes )}, nil
+}
+
+func clientForNodes( n NodeList )  Client {
+	urls := []string{}
+	for _, node := range( *n ) {
+		urls = append( urls, fmt.Sprintf( "%s:%d", node.Host, node.Port ) )
+	}
+	memcache.New( urls... )
+}
+
+func remoteCommand( conn io.ReaderWriter, command string ) string {
+	fmt.Fprintf(conn, command + "\r\n" )
+	var response string
+
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		if scanner.Text() == OUTPUT_END_MARKER {
+			break
+		}
+		response += scanner.Text()
+
+	}
+
+	return response
+}
+var STATS_COMMAND = "stats"
+var NEW_COMMAND = "config get cluster"
+var OLD_COMMAND = "get AmazonElastiCache:cluster"
+var NEW_COMMAND_AVAILABLE_VERSION, _ = versions.NewVersion( "1.4.14" )
+var OUTPUT_END_MARKER = "END"
+var VERSION_REGEX = regexp.MustCompile( /^STAT version ([0-9.]+)\s*$/ )
+var NODE_SEPARATOR = " "
+
+func getNodeData( conn io.ReaderWriter ) string {
+	stats, err := parseStats( remoteCommand( conn, STATS_COMMAND ) )
+	if err != nil {
+		return nil, err
+	}
+	var nodeInfo string
+	if stats.Version.LessThan(  NEW_COMMAND_AVAILABLE_VERSION ) {
+		nodeInfo = remoteCommand( conn, OLD_COMMAND );
+	} else {
+		nodeInfo = remoteCommand( conn, NEW_COMMAND )
+	}
+	return nodeInfo
 }
 
 func clusterNodes() ([]string, error) {
@@ -83,25 +117,20 @@ func clusterNodes() ([]string, error) {
 
 	conn, err := net.Dial("tcp", endpoint)
 	if err != nil {
-		logger.Printf("Socket Dial (%s): %s", endpoint, err.Error())
 		return nil, err
 	}
 	defer conn.Close()
-
-	command := "config get cluster\r\n"
-	fmt.Fprintf(conn, command)
-
-	response, err := parseNodes(conn)
-	if err != nil {
-		return nil, err
+	nodeInfo := getNodeData( conn )
+	nodes := NodeList{}
+	for _, line := range( strings.split( nodeInfo, NODE_SEPARATOR ) ) {
+		n, err := parseNodeLine( line ) 
+		if( err != nil ) {
+			return nil, err
+		} else {
+			nodes = append( nodes, n)
+		}
 	}
-
-	urls, err := parseURLs(response)
-	if err != nil {
-		return nil, err
-	}
-
-	return urls, nil
+	return nodes
 }
 
 func elasticache() (string, error) {
@@ -109,60 +138,35 @@ func elasticache() (string, error) {
 
 	endpoint = os.Getenv("ELASTICACHE_ENDPOINT")
 	if len(endpoint) == 0 {
-		logger.Println("ElastiCache endpoint not set")
 		return "", errors.New("ElastiCache endpoint not set")
 	}
 
 	return endpoint, nil
 }
 
-func parseNodes(conn io.Reader) (string, error) {
-	var response string
 
-	count := 0
-	location := 3 // AWS docs suggest that nodes will always be listed on line 3
 
-	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
-		count++
-		if count == location {
-			response = scanner.Text()
-		}
-		if scanner.Text() == "END" {
-			break
-		}
+
+func parseStats( stats string ) ( *StatInformation, error ) {
+	ver := VERSION_REGEX.FindStringSubmatch( string )
+	if ver == nil {
+		return nil, errors.New("Did not find version information in results of STAT command")
 	}
-
-	if err := scanner.Err(); err != nil {
-		logger.Println("Scanner: ", err.Error())
-		return "", err
-	}
-
-	logger.Println("ElastiCache nodes found: ", response)
-	return response, nil
+	rVal := StatInformation {}
+	rVal.Version, err = version.NewVersion( ver )
+	return &rVal, err
 }
 
-func parseURLs(response string) ([]string, error) {
-	var urls []string
-	var nodes []Node
+func parseNodeLine(nodeData string) ([]string, error) {
+	fields := strings.Split(nodeData, "|") // ["host", "ip", "port"]
+	rVal := Node {}
+	rVal.Host = fields[0]
+	rVal.Ip = fields[1]
 
-	items := strings.Split(response, " ")
-
-	for _, v := range items {
-		fields := strings.Split(v, "|") // ["host", "ip", "port"]
-
-		port, err := strconv.Atoi(fields[2])
-		if err != nil {
-			logger.Println("Integer conversion: ", err.Error())
-			return nil, err
-		}
-
-		node := Node{fmt.Sprintf("%s:%d", fields[1], port), fields[0], fields[1], port}
-		nodes = append(nodes, node)
-		urls = append(urls, node.URL)
-
-		logger.Printf("Host: %s, IP: %s, Port: %d, URL: %s", node.Host, node.IP, node.Port, node.URL)
+	port, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return rVal, err
 	}
-
-	return urls, nil
+	rVal.Port = port
+	return rVal, nil
 }
