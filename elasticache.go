@@ -163,6 +163,9 @@ func parseStats(stats string) (*StatInformation, error) {
 func parseNodeLine(nodeData string) (Node, error) {
 	fields := strings.Split(nodeData, "|")
 	rVal := Node{}
+	if len(fields) != 3 {
+		return rVal, errors.New("Invalid node info line: " + nodeData)
+	}
 	rVal.Host = fields[0]
 	rVal.IP = fields[1]
 
