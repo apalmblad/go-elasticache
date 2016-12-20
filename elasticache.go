@@ -128,13 +128,23 @@ func clusterNodes() (NodeList, error) {
 	}
 	nodes := []Node{}
 
-	for _, line := range *nodeInfo {
+	for i, line := range *nodeInfo {
 		if strings.Contains(line, "|") {
-			n, err := parseNodeLine(line)
+			nodeStrings := strings.Split(line, NODE_SEPARATOR)
+			expectedNodes, err := strconv.Atoi(nodeStrings[i-1])
 			if err != nil {
-				return nil, err
-			} else {
-				nodes = append(nodes, n)
+				return nil, errors.New("Bad node count conversion: " + err.Error())
+			}
+			if len(nodeStrings) != expectedNodes {
+				return nil, errors.New(fmt.Sprintf("Mismatched node list found, saw %d nodes but expected %d", len(nodeStrings), expectedNodes))
+			}
+			for _, ns := range nodeStrings {
+				n, err := parseNodeLine(ns)
+				if err != nil {
+					return nil, err
+				} else {
+					nodes = append(nodes, n)
+				}
 			}
 		}
 	}
