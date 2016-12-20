@@ -5,30 +5,31 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/bradfitz/gomemcache/memcache"
-	"github.com/integralist/go-findroot/find"
 	"github.com/hashicorp/go-version"
 )
 
-// Node is a single ElastiCache node
 type Node struct {
-	URL  string
 	Host string
 	IP   string
 	Port int
 }
-type Node struct {
-	Host string
-	IP string
-	Port int
+
+type NodeList *[]Node
+
+func (node Node) URL() string {
+	if node.Host != "" {
+		return fmt.Sprintf("%s:%d", node.Host, node.Port)
+	} else {
+		return fmt.Sprintf("%s:%d", node.IP, node.Port)
+	}
 }
-type NodeList *Node[]
 
 // Item embeds the memcache client's type of the same name
 type Item memcache.Item
@@ -39,7 +40,7 @@ type Client struct {
 }
 
 type StatInformation struct {
-	Version version.Version
+	Version *version.Version
 }
 
 // Set abstracts the memcache client details away,
@@ -61,19 +62,19 @@ func New() (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{Client: clientForNodes( nodes )}, nil
+	return &Client{Client: clientForNodes(nodes)}, nil
 }
 
-func clientForNodes( n NodeList )  Client {
+func clientForNodes(n NodeList) *memcache.Client {
 	urls := []string{}
-	for _, node := range( *n ) {
-		urls = append( urls, fmt.Sprintf( "%s:%d", node.Host, node.Port ) )
+	for _, node := range *n {
+		urls = append(urls, node.URL())
 	}
-	memcache.New( urls... )
+	return memcache.New(urls...)
 }
 
-func remoteCommand( conn io.ReaderWriter, command string ) string {
-	fmt.Fprintf(conn, command + "\r\n" )
+func remoteCommand(conn io.ReadWriter, command string) string {
+	fmt.Fprintf(conn, command+"\r\n")
 	var response string
 
 	scanner := bufio.NewScanner(conn)
@@ -87,29 +88,30 @@ func remoteCommand( conn io.ReaderWriter, command string ) string {
 
 	return response
 }
+
 var STATS_COMMAND = "stats"
 var NEW_COMMAND = "config get cluster"
 var OLD_COMMAND = "get AmazonElastiCache:cluster"
-var NEW_COMMAND_AVAILABLE_VERSION, _ = versions.NewVersion( "1.4.14" )
+var NEW_COMMAND_AVAILABLE_VERSION, _ = version.NewVersion("1.4.14")
 var OUTPUT_END_MARKER = "END"
-var VERSION_REGEX = regexp.MustCompile( /^STAT version ([0-9.]+)\s*$/ )
+var VERSION_REGEX = regexp.MustCompile("^STAT version ([0-9.]+)\\s*$")
 var NODE_SEPARATOR = " "
 
-func getNodeData( conn io.ReaderWriter ) string {
-	stats, err := parseStats( remoteCommand( conn, STATS_COMMAND ) )
+func getNodeData(conn io.ReadWriter) (*string, error) {
+	stats, err := parseStats(remoteCommand(conn, STATS_COMMAND))
 	if err != nil {
 		return nil, err
 	}
 	var nodeInfo string
-	if stats.Version.LessThan(  NEW_COMMAND_AVAILABLE_VERSION ) {
-		nodeInfo = remoteCommand( conn, OLD_COMMAND );
+	if stats.Version.LessThan(NEW_COMMAND_AVAILABLE_VERSION) {
+		nodeInfo = remoteCommand(conn, OLD_COMMAND)
 	} else {
-		nodeInfo = remoteCommand( conn, NEW_COMMAND )
+		nodeInfo = remoteCommand(conn, NEW_COMMAND)
 	}
-	return nodeInfo
+	return &nodeInfo, nil
 }
 
-func clusterNodes() ([]string, error) {
+func clusterNodes() (NodeList, error) {
 	endpoint, err := elasticache()
 	if err != nil {
 		return nil, err
@@ -120,17 +122,20 @@ func clusterNodes() ([]string, error) {
 		return nil, err
 	}
 	defer conn.Close()
-	nodeInfo := getNodeData( conn )
-	nodes := NodeList{}
-	for _, line := range( strings.split( nodeInfo, NODE_SEPARATOR ) ) {
-		n, err := parseNodeLine( line ) 
-		if( err != nil ) {
+	nodeInfo, err := getNodeData(conn)
+	if err != nil {
+		return nil, err
+	}
+	nodes := []Node{}
+	for _, line := range strings.Split(*nodeInfo, NODE_SEPARATOR) {
+		n, err := parseNodeLine(line)
+		if err != nil {
 			return nil, err
 		} else {
-			nodes = append( nodes, n)
+			nodes = append(nodes, n)
 		}
 	}
-	return nodes
+	return &nodes, nil
 }
 
 func elasticache() (string, error) {
@@ -144,24 +149,22 @@ func elasticache() (string, error) {
 	return endpoint, nil
 }
 
-
-
-
-func parseStats( stats string ) ( *StatInformation, error ) {
-	ver := VERSION_REGEX.FindStringSubmatch( string )
-	if ver == nil {
+func parseStats(stats string) (*StatInformation, error) {
+	ver := VERSION_REGEX.FindStringSubmatch(stats)
+	if ver == nil || len(ver) < 2 {
 		return nil, errors.New("Did not find version information in results of STAT command")
 	}
-	rVal := StatInformation {}
-	rVal.Version, err = version.NewVersion( ver )
+	rVal := StatInformation{}
+	var err error
+	rVal.Version, err = version.NewVersion(ver[1])
 	return &rVal, err
 }
 
-func parseNodeLine(nodeData string) ([]string, error) {
-	fields := strings.Split(nodeData, "|") // ["host", "ip", "port"]
-	rVal := Node {}
+func parseNodeLine(nodeData string) (Node, error) {
+	fields := strings.Split(nodeData, "|")
+	rVal := Node{}
 	rVal.Host = fields[0]
-	rVal.Ip = fields[1]
+	rVal.IP = fields[1]
 
 	port, err := strconv.Atoi(fields[2])
 	if err != nil {
