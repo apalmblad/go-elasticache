@@ -131,7 +131,7 @@ func clusterNodes() (NodeList, error) {
 	for i, line := range *nodeInfo {
 		if strings.Contains(line, "|") {
 			nodeStrings := strings.Split(line, NODE_SEPARATOR)
-			expectedNodes, err := strconv.Atoi(*nodeInfo[i-1])
+			expectedNodes, err := strconv.Atoi((*nodeInfo)[i-1])
 			if err != nil {
 				return nil, errors.New("Bad node count conversion: " + err.Error())
 			}
