@@ -19,8 +19,6 @@ mc := memcache.New("10.0.0.1:11211", "10.0.0.2:11211", "10.0.0.3:11212")
 
 But when using the [AWS ElastiCache](https://aws.amazon.com/elasticache/) service you need to query a particular internal endpoint via a socket connection and manually parse out the details of the available cluster.
 
-In Ruby it seems most Memcache clients are setup to handle this for you, but in Go that doesn't appear to be the case. Hence I've created this package as a thin abstraction layer on top of the gomemcache package.
-
 ## Example
 
 Below is an example of how to use this package. 
@@ -37,7 +35,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/integralist/go-elasticache/elasticache"
+	"github.com/apalmblad/go-elasticache/elasticache"
 )
 
 func main() {
