@@ -97,13 +97,21 @@ var OUTPUT_END_MARKER = "END"
 var VERSION_REGEX = regexp.MustCompile("^STAT version ([0-9.]+)\\s*$")
 var NODE_SEPARATOR = " "
 
-func getNodeData(conn io.ReadWriter) (*[]string, error) {
+func getVersion(conn io.ReadWriter) (*version.Version, error) {
+
 	stats, err := parseStats(remoteCommand(conn, STATS_COMMAND))
 	if err != nil {
 		return nil, err
 	}
+	return stats.Version, nil
+}
+func getNodeData(conn io.ReadWriter) (*[]string, error) {
 	var nodeInfo []string
-	if stats.Version.LessThan(NEW_COMMAND_AVAILABLE_VERSION) {
+	version, err := getVersion(conn)
+	if err != nil {
+		return nil, err
+	}
+	if version.LessThan(NEW_COMMAND_AVAILABLE_VERSION) {
 		nodeInfo = remoteCommand(conn, OLD_COMMAND)
 	} else {
 		nodeInfo = remoteCommand(conn, NEW_COMMAND)
@@ -126,8 +134,11 @@ func clusterNodes() (NodeList, error) {
 	if err != nil {
 		return nil, err
 	}
-	nodes := []Node{}
+	return parseNodeResult(nodeInfo)
+}
+func parseNodeResult(nodeInfo *[]string) (NodeList, error) {
 
+	nodes := []Node{}
 	for _, line := range *nodeInfo {
 		if strings.Contains(line, "|") {
 			nodeStrings := strings.Split(line, NODE_SEPARATOR)

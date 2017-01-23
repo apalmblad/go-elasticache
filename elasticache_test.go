@@ -1,7 +1,6 @@
 package elasticache
 
 import (
-	"bytes"
 	"os"
 	"testing"
 )
@@ -15,45 +14,43 @@ func TestElastiCacheEndpoint(t *testing.T) {
 		t.Errorf("The response '%s' didn't match the expectation '%s'", response, expectation)
 	}
 }
-
+func nodesEqual(n1 Node, n2 Node) bool {
+	return n1.Host == n2.Host && n1.IP == n2.IP && n1.Port == n2.Port
+}
 func TestParseNodes(t *testing.T) {
-	expectation := "localhost|127.0.0.1|11211"
-	cluster := `CONFIG cluster 0 25
-1
-localhost|127.0.0.1|11211
+	expectation := Node{Host: "localhost", IP: "127.0.0.1", Port: 11211}
 
-END`
+	data := []string{"CONFIG cluster 0 25", "1", "localhost|127.0.0.1|11211", "", "END"}
+	response, _ := parseNodeResult(&data)
+	if len(*response) != 1 {
+		t.Errorf("Unexpected number of nodes")
+	}
+	if !nodesEqual((*response)[0], expectation) {
+		t.Errorf("The response '%s' didn't match the expectation '%s'", (*response)[0], expectation)
+	}
 
-	r := bytes.NewReader([]byte(cluster))
-
-	response, _ := parseNodes(r)
-
-	if response != expectation {
-		t.Errorf("The response '%s' didn't match the expectation '%s'", response, expectation)
+}
+func TestParseNodeLine(t *testing.T) {
+	expectation := Node{Host: "host", IP: "foo", Port: 1}
+	response, _ := parseNodeLine("host|foo|1")
+	if !nodesEqual(expectation, response) {
+		t.Errorf("Did not parse node information correctly.")
 	}
 }
-
 func TestParseURLs(t *testing.T) {
-	expectationLength := 3
+	expectations := []Node{Node{Host: "host", IP: "foo", Port: 1},
+		Node{Host: "host", IP: "bar", Port: 2},
+		Node{Host: "host", IP: "baz", Port: 3}}
 
-	response, _ := parseURLs("host|foo|1 host|bar|2 host|baz|3")
+	data := []string{"host|foo|1 host|bar|2 host|baz|3"}
+	response, _ := parseNodeResult(&data)
 
-	if len(response) != expectationLength {
-		t.Errorf("The response length '%d' didn't match the expectation '%d'", len(response), expectationLength)
+	if len(*response) != len(expectations) {
+		t.Errorf("The response length '%d' didn't match the expectation '%d'", len(*response), len(expectations))
 	}
-
-	var suite = []struct {
-		response    string
-		expectation string
-	}{
-		{response[0], "foo:1"},
-		{response[1], "bar:2"},
-		{response[2], "baz:3"},
-	}
-
-	for _, v := range suite {
-		if v.response != v.expectation {
-			t.Errorf("The response '%s' didn't match the expectation '%s'", v.response, v.expectation)
+	for i, n := range *response {
+		if !nodesEqual(n, expectations[i]) {
+			t.Errorf("Node at result in %d did not match expectation", i)
 		}
 	}
 }
